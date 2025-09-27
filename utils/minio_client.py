@@ -25,13 +25,32 @@ def create_minio_client():
     return client
 
 
-def upload_file(filename, screenshot,content_type):
-    screenshot_stream = io.BytesIO(screenshot)
+def upload_file(filename, file, content_type):
+    # 校验参数
+    try:
+        content_type = validate_content_type(content_type)
+    except ValueError as e:
+        print(f"上传失败，参数校验错误: {e}")
+        return False
+
+    screenshot_stream = io.BytesIO(file)
     minio_client = create_minio_client()
     minio_client.put_object(
         all_config.MINIO_BUCKET_NAME,
         filename,
         screenshot_stream,
-        length=len(screenshot),
+        length=len(file),
         content_type=content_type
     )
+
+def validate_content_type(content_type):
+    """校验内容类型"""
+    valid_types = [
+        "image/jpeg", "image/png", "image/gif",
+        "video/mp4", "video/mpeg", "video/webm"
+    ]
+    if not content_type or not isinstance(content_type, str):
+        raise ValueError("内容类型不能为空且必须是字符串")
+    if content_type not in valid_types:
+        raise ValueError(f"无效的内容类型: {content_type}，支持的类型: {', '.join(valid_types)}")
+    return content_type

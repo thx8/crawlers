@@ -2,7 +2,7 @@ import io
 
 from minio import Minio
 from minio.error import S3Error
-import crowbar_crawler.config as all_config
+import config as all_config
 
 def create_minio_client():
     client = Minio(

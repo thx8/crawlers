@@ -1,5 +1,6 @@
 from crowbar_crawler.utils.kafka_client import create_consumer
 from crowbar_crawler.crawlers import youtube_crawler
+from crawlers import tiktok_crawler
 
 CRAWLER_MAP = {
     "youtube": youtube_crawler.fetch,

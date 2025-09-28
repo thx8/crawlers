@@ -1,6 +1,6 @@
 from kafka import KafkaConsumer
 import json
-import crowbar_crawler.config as all_config
+import config as all_config
 
 def create_consumer(group_id):
     consumer = KafkaConsumer(

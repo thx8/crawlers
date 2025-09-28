@@ -2,17 +2,17 @@
 import requests
 import os
 import re
-import json
+import undetected_chromedriver as UC
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from utils.minio_client import upload_file
+from yt_dlp import YoutubeDL
+# from utils.minio_client import upload_file
 
 
 def create_crawler():
-    # print('进入到create_driver_without_login')
     # 配置 Chrome 选项
     chrome_options = webdriver.ChromeOptions()
     # chrome_options.add_argument("--headless")  # 无头模式，若要调试可以注释掉
@@ -27,10 +27,81 @@ def sanitize_filename(filename):
     """清理文件名，移除非法字符"""
     return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
+def download_x_video(url: str, folder: str):
+    """
+    下载 X(原Twitter) 推文中的视频为 mp4，自动选择最佳画质和音频并合并。
+    :param url: 推文链接，如 https://x.com/username/status/1234567890
+    :param output_template: 输出文件名模板
+    """
 
-def download_media(url, folder, item_id, index, media_type):
+    def progress(d):
+        if d.get('status') == 'downloading':
+            # 显示简单进度
+            speed = d.get('speed') or 0
+            eta = d.get('eta')
+            p = d.get('_percent_str', '').strip()
+            s = f"进度: {p}  速度: {speed/1024/1024:.2f} MB/s"
+            if eta is not None:
+                s += f"  预计剩余: {eta}s"
+            print(s, end='\r')
+        elif d.get('status') == 'finished':
+            print("\n下载完成，正在合并/转封装...")
+
+    ydl_opts = {
+        # 选最好的视频+音频；若不支持合并则退回最好的单路流
+        "format": "b",  # bv*+ba/
+        # 输出文件名
+        "outtmpl": folder + "%(title).80s-%(id)s.%(ext)s",
+        # 成品想要 mp4；若源是 m3u8，会自动用 ffmpeg 转封装
+        "merge_output_format": "mp4",
+        # 出错时继续（有时推文线程里有多媒体失败不影响主视频）
+        "ignoreerrors": True,
+        # 避免报错中断
+        "retries": 5,
+        "fragment_retries": 5,
+        # 显示进度
+        "progress_hooks": [progress],
+        # 某些地区/网络需要该 UA 才能正常解析
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        },
+        # 如果你需要下载需要登录可见的视频，可以解开下面这行，直接用浏览器 Cookie：
+        # "cookiesfrombrowser": ("chrome",),  # 或 ("edge",) / ("firefox",)
+        # 或者用 cookie 文件：
+        # "cookiefile": "cookies.txt",
+    }
+
+    # 允许 x.com 或 twitter.com，两者都可以
+    url = url.replace("twitter.com", "x.com")
+
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)  # 若是推文含多媒体，会按上面策略下载
+        # 返回主条目的文件名（可能为列表）
+        if info is None:
+            print("没有可下载的媒体，可能需要登录或链接不包含视频。")
+            return
+        # 打印一下输出文件名（单条/多条都尽量给出）
+        def _collect_entries(i):
+            if i is None:
+                return []
+            if "entries" in i and i["entries"]:
+                res = []
+                for e in i["entries"]:
+                    res += _collect_entries(e)
+                return res
+            return [i]
+
+        entries = _collect_entries(info)
+        print("\n保存的文件：")
+        for e in entries:
+            fn = ydl.prepare_filename(e)
+            if e.get("ext") and not fn.endswith(f".{e['ext']}"):
+                fn = fn.rsplit(".", 1)[0] + f".{e['ext']}"
+            print(" -", fn)
+
+def download_media(url, folder, platform, item_id, index, media_type):
     """下载单个媒体文件并上传到 MinIO"""
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(f'{folder}/{platform}', exist_ok=True)
 
     # 从URL获取文件扩展名
     extension = url.split(".")[-1].split("?")[0].split("#")[0].lower()
@@ -44,7 +115,7 @@ def download_media(url, folder, item_id, index, media_type):
             extension = "mp4"
 
     filename = f"{item_id}_{index}.{extension}"
-    local_path = os.path.join(folder, filename)
+    local_path = os.path.join(folder, platform, filename)
 
     try:
         headers = {
@@ -58,7 +129,7 @@ def download_media(url, folder, item_id, index, media_type):
         }
 
         resp = requests.get(url, stream=True, headers=headers, timeout=30)
-        resp.raise_for_status()
+        resp.raise_for_status() #
 
         content = b""
         with open(local_path, "wb") as f:
@@ -74,7 +145,7 @@ def download_media(url, folder, item_id, index, media_type):
             content_type = f"video/{extension}" if extension in ["mp4", "webm", "mov"] else "video/mp4"
 
         # 上传到MinIO
-        upload_file(filename, content, content_type)  # 先注释掉方法目前没有
+        # upload_file(filename, content, content_type)  # 先注释掉方法目前没有
         print(f"成功下载并上传: {filename}")
         return local_path, filename, content_type
 
@@ -86,7 +157,7 @@ def download_media(url, folder, item_id, index, media_type):
         return None, None, None
 
 
-def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downloads"):
+def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downloads/twitter"):
     """从Twitter推文URL提取并下载图片和视频"""
     os.makedirs(folder, exist_ok=True)
     media_files = []
@@ -138,7 +209,7 @@ def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downlo
 
                     print(f"找到图片 {index}: {img_url}")
                     local_path, minio_filename, content_type = download_media(
-                        img_url, folder, item_id, index, "image"
+                        img_url, folder, platform,item_id, index, "image"
                     )
                     if local_path:
                         media_files.append({
@@ -152,63 +223,8 @@ def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downlo
                 print(f"处理图片 {index} 时出错: {e}")
                 continue
 
-        # 查找视频
-        print("正在查找视频...")
-        video_elements = driver.find_elements(By.CSS_SELECTOR,
-                                              '[data-testid="videoPlayer"] video, [data-testid="videoPlayer"] source')
-
-        for index, video_element in enumerate(video_elements, 1):
-            try:
-                video_url = None
-
-                # 尝试获取视频URL
-                if video_element.get_attribute("src"):
-                    video_url = video_element.get_attribute("src")
-                elif video_element.get_attribute("data-src"):
-                    video_url = video_element.get_attribute("data-src")
-
-                if video_url:
-                    print(f"找到视频 {index}: {video_url}")
-                    local_path, minio_filename, content_type = download_media(
-                        video_url, folder, item_id, index, "video"
-                    )
-                    if local_path:
-                        media_files.append({
-                            "local_path": local_path,
-                            "minio_filename": minio_filename,
-                            "content_type": content_type,
-                            "media_type": "video"
-                        })
-
-            except Exception as e:
-                print(f"处理视频 {index} 时出错: {e}")
-                continue
-
-        # 如果没找到视频，尝试查找其他可能的视频元素
-        if not any(media["media_type"] == "video" for media in media_files):
-            print("尝试查找其他视频元素...")
-            alternative_video_elements = driver.find_elements(By.CSS_SELECTOR,
-                                                              'video, [data-testid="videoComponent"] video')
-
-            for index, video_element in enumerate(alternative_video_elements, 1):
-                try:
-                    video_url = video_element.get_attribute("src")
-                    if video_url and "video" in video_url:
-                        print(f"找到替代视频 {index}: {video_url}")
-                        local_path, minio_filename, content_type = download_media(
-                            video_url, folder, item_id, f"alt_{index}", "video"
-                        )
-                        if local_path:
-                            media_files.append({
-                                "local_path": local_path,
-                                "minio_filename": minio_filename,
-                                "content_type": content_type,
-                                "media_type": "video"
-                            })
-
-                except Exception as e:
-                    print(f"处理替代视频 {index} 时出错: {e}")
-                    continue
+        # 下载视频
+        download_x_video(tweet_url, f'downloads/{platform}/{item_id}_')
 
     except Exception as e:
         print(f"访问推文时出错: {e}")
@@ -220,10 +236,11 @@ def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downlo
     return media_files
 
 
-def fetch(tweet_url, item_id, platform="twitter", folder="downloads"):
+def fetch(tweet_url, platform="twitter", folder="downloads"):
     """主函数：从Twitter推文下载媒体文件"""
-    print(f"开始处理Twitter推文: {tweet_url}")
+    print(f"开始处理    Twitter推文: {tweet_url}")
 
+    item_id = f"{test_url.split('/')[5]}"
     # 验证URL格式
     if not tweet_url.startswith("https://twitter.com/") and not tweet_url.startswith("https://x.com/"):
         print("错误: 请提供有效的Twitter推文URL")
@@ -249,8 +266,8 @@ def fetch(tweet_url, item_id, platform="twitter", folder="downloads"):
 
 if __name__ == "__main__":
     # 测试用例
-    test_url = "https://x.com/Cristiano/status/1971675969137303570"  # 替换为实际的推文URL
-    test_item_id = "test_tweet_001"
+    test_url = "https://x.com/aespa_official/status/1971915321788576147"  # 替换为实际的推文URL
 
-    media_files = fetch(test_url, test_item_id)
+
+    media_files = fetch(test_url)
     print(f"测试完成，下载了 {len(media_files)} 个文件")

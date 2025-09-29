@@ -2,7 +2,7 @@ import requests
 import os
 import yt_dlp
 import re
-from crowbar_crawler.utils.minio_client import upload_file
+from utils.minio_client import upload_file
 
 
 
@@ -37,7 +37,10 @@ def download_url(url, folder, item_id, index, platform):
         return None, None, None
 
 
-def fetch(post_url, item_id, platform, folder="downloads"):
+def fetch(item, folder="downloads"):
+    post_url = item['itemURL']
+    item_id = item['itemId']
+    platform = item['itemSource']
     """从 Reddit 帖子下载媒体（视频、图片或图集）并上传到 MinIO"""
     os.makedirs(folder, exist_ok=True)
     media_files = []

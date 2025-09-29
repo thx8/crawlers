@@ -1,9 +1,9 @@
-from selenium.webdriver.chrome import webdriver
+from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 def setup_driver():
-    service = Service(executable_path='chromedriver.exe')
+    service = Service()
     chrome_options = Options()
     chrome_options.add_argument('--headless')  # 无头模式
     chrome_options.add_argument('--no-sandbox')

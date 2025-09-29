@@ -1,25 +1,45 @@
 # coding=utf-8
+import traceback
 import requests
 import os
 import re
-import undetected_chromedriver as UC
+import undetected_chromedriver as uc
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from yt_dlp import YoutubeDL
-# from utils.minio_client import upload_file
+from utils.minio_client import upload_file
 
 
-def create_crawler():
-    # 配置 Chrome 选项
-    chrome_options = webdriver.ChromeOptions()
-    # chrome_options.add_argument("--headless")  # 无头模式，若要调试可以注释掉
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    # 启动浏览器
-    driver = webdriver.Chrome(options=chrome_options)
+def create_crawler(headless=False, proxy=None):
+    opts = uc.ChromeOptions()
+    if headless:
+        opts.add_argument('--headless=new')
+        opts.add_argument('--window-size=1366,768')
+
+    if proxy:
+        opts.add_argument(f'--proxy-server={proxy}')
+
+    # 隐藏常见自动化痕迹
+    opts.add_argument('--disable-blink-features=AutomationControlled')
+    # opts.add_experimental_option('excludeSwitches', ['enable-automation'])
+    # opts.add_experimental_option('useAutomationExtension', False)
+
+    driver = uc.Chrome(options=opts)
+
+    # 覆盖 webdriver 标记 & 语言/时区/UA
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        'source': 'Object.defineProperty(navigator,"webdriver",{get:()=>undefined});'
+    })
+    driver.execute_cdp_cmd('Emulation.setLocaleOverride', {'locale': 'zh-CN'})
+    driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {'timezoneId': 'Asia/Shanghai'})
+    driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+        'userAgent': driver.execute_script("return navigator.userAgent"),
+        'platform': 'Win32',
+        'acceptLanguage': 'zh-CN,zh;q=0.9'
+    })
     return driver
 
 
@@ -27,7 +47,7 @@ def sanitize_filename(filename):
     """清理文件名，移除非法字符"""
     return re.sub(r'[<>:"/\\|?*]', '_', filename)
 
-def download_x_video(url: str, folder: str):
+def download_x_video(url: str, folder: str, platform:str ,item_id: str):
     """
     下载 X(原Twitter) 推文中的视频为 mp4，自动选择最佳画质和音频并合并。
     :param url: 推文链接，如 https://x.com/username/status/1234567890
@@ -51,7 +71,7 @@ def download_x_video(url: str, folder: str):
         # 选最好的视频+音频；若不支持合并则退回最好的单路流
         "format": "b",  # bv*+ba/
         # 输出文件名
-        "outtmpl": folder + "%(title).80s-%(id)s.%(ext)s",
+        "outtmpl": folder + platform + item_id + "%(title).80s-%(id)s.%(ext)s",
         # 成品想要 mp4；若源是 m3u8，会自动用 ffmpeg 转封装
         "merge_output_format": "mp4",
         # 出错时继续（有时推文线程里有多媒体失败不影响主视频）
@@ -65,6 +85,7 @@ def download_x_video(url: str, folder: str):
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         },
+
         # 如果你需要下载需要登录可见的视频，可以解开下面这行，直接用浏览器 Cookie：
         # "cookiesfrombrowser": ("chrome",),  # 或 ("edge",) / ("firefox",)
         # 或者用 cookie 文件：
@@ -99,6 +120,19 @@ def download_x_video(url: str, folder: str):
                 fn = fn.rsplit(".", 1)[0] + f".{e['ext']}"
             print(" -", fn)
 
+
+            filename = str(fn).replace(f'{folder+platform}', '')
+            print(f'我即将上传视频{filename}了')
+
+            video_bytes = b"" # 分片读取视频文件
+            with open(fn, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    video_bytes += chunk
+            # 上传视频文件
+            upload_file(filename, video_bytes, ydl_opts['merge_output_format'])
+
+
+    return
 def download_media(url, folder, platform, item_id, index, media_type):
     """下载单个媒体文件并上传到 MinIO"""
     os.makedirs(f'{folder}/{platform}', exist_ok=True)
@@ -145,7 +179,7 @@ def download_media(url, folder, platform, item_id, index, media_type):
             content_type = f"video/{extension}" if extension in ["mp4", "webm", "mov"] else "video/mp4"
 
         # 上传到MinIO
-        # upload_file(filename, content, content_type)  # 先注释掉方法目前没有
+        upload_file(filename, content, content_type)
         print(f"成功下载并上传: {filename}")
         return local_path, filename, content_type
 
@@ -185,7 +219,6 @@ def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downlo
         print("正在查找图片...")
         image_elements = driver.find_elements(By.CSS_SELECTOR,
                                               '[data-testid="tweetPhoto"] img, [data-testid="tweetPhoto"] source')
-
         for index, img_element in enumerate(image_elements, 1):
             try:
                 # 尝试获取高分辨率图片URL
@@ -223,11 +256,13 @@ def extract_twitter_media(tweet_url, item_id, platform="twitter", folder="downlo
                 print(f"处理图片 {index} 时出错: {e}")
                 continue
 
+
         # 下载视频
-        download_x_video(tweet_url, f'downloads/{platform}/{item_id}_')
+        filename = download_x_video(tweet_url, f'downloads\\', f'{platform}\\',f'{item_id}_')
 
     except Exception as e:
         print(f"访问推文时出错: {e}")
+        print(traceback.format_exc())
     finally:
         if driver:
             driver.quit()
@@ -266,8 +301,8 @@ def fetch(tweet_url, platform="twitter", folder="downloads"):
 
 if __name__ == "__main__":
     # 测试用例
-    test_url = "https://x.com/aespa_official/status/1971915321788576147"  # 替换为实际的推文URL
-
-
+    test_url = "https://x.com/godmitzu/status/1972254703955107938"  # 替换为实际的推文URL
+    # 最终方法，直接运行该函数即可获取twitter该url的图片和视频
     media_files = fetch(test_url)
-    print(f"测试完成，下载了 {len(media_files)} 个文件")
+
+

@@ -16,7 +16,7 @@ def take_screenshot(item):
         filename = f"{item['itemId']}_{timestamp}.png"
         # 截屏到内存
         screenshot = driver.get_screenshot_as_png()
-        upload_file(filename,screenshot,'image/png')
+        upload_file(filename,screenshot,'image/png','screenshots-test')
         print(f"Screenshot uploaded to MinIO: {filename}")
     except Exception as e:
         print(f"Error processing screenshot for {item['itemURL']}: {str(e)}")

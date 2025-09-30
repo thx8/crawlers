@@ -4,7 +4,7 @@ from minio import Minio
 from minio.error import S3Error
 import config as all_config
 
-def create_minio_client():
+def create_minio_client(bucket_name):
     client = Minio(
         all_config.MINIO_SERVERS,
         access_key= all_config.MINIO_ACCESS_KEY,
@@ -14,18 +14,18 @@ def create_minio_client():
 
     # 检查 bucket 是否存在，不存在则创建
     try:
-        if not client.bucket_exists(all_config.MINIO_BUCKET_NAME):
-            client.make_bucket(all_config.MINIO_BUCKET_NAME)
-            print(f"Bucket {all_config.MINIO_BUCKET_NAME} created")
+        if not client.bucket_exists(bucket_name):
+            client.make_bucket(bucket_name)
+            print(f"Bucket {bucket_name} created")
         else:
-            print(f"Bucket {all_config.MINIO_BUCKET_NAME} already exists")
+            print(f"Bucket {bucket_name} already exists")
     except S3Error as e:
         print(f"MinIO error: {str(e)}")
         raise
     return client
 
 
-def upload_file(filename, file, content_type):
+def upload_file(filename, file, content_type,bucket_name):
     # 校验参数
     try:
         content_type = validate_content_type(content_type)
@@ -34,9 +34,9 @@ def upload_file(filename, file, content_type):
         return False
 
     screenshot_stream = io.BytesIO(file)
-    minio_client = create_minio_client()
+    minio_client = create_minio_client(bucket_name)
     minio_client.put_object(
-        all_config.MINIO_BUCKET_NAME,
+        bucket_name,
         filename,
         screenshot_stream,
         length=len(file),
